@@ -40,6 +40,8 @@ func Serve(config config.Config) {
 	// Admin Routes
 	e.GET("/mocks", handler.GetMocks)
 	e.POST("/mocks", handler.AddMocks)
+	e.POST("/mocks/lock", handler.LockMocks)
+	e.POST("/mocks/unlock", handler.UnlockMocks)
 	e.GET("/history", handler.GetHistory)
 	e.GET("/history/summary", handler.SummarizeHistory)
 	e.GET("/sessions", handler.GetSessions)

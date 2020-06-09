@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -58,10 +59,37 @@ func (m *Mock) Validate() error {
 	return nil
 }
 
+func (m *Mock) Init() {
+	m.State = &MockState{
+		CreationDate: time.Now(),
+		ID:           uuid.New().String(),
+	}
+
+	if m.Context == nil {
+		m.Context = &MockContext{}
+	}
+}
+
 func (m *Mock) Verify() bool {
 	isTimesDefined := m.Context.Times > 0
 	hasBeenCalledRightNumberOfTimes := m.State.TimesCount == m.Context.Times
 	return !isTimesDefined || hasBeenCalledRightNumberOfTimes
+}
+
+func (m *Mock) CloneAndReset() *Mock {
+	return &Mock{
+		Request: m.Request,
+		Context: m.Context,
+		State: &MockState{
+			ID:           m.State.ID,
+			CreationDate: time.Now(),
+			Locked:       m.State.Locked,
+			TimesCount:   0,
+		},
+		DynamicResponse: m.DynamicResponse,
+		Proxy:           m.Proxy,
+		Response:        m.Response,
+	}
 }
 
 type MockRequest struct {
@@ -159,5 +187,6 @@ type MockContext struct {
 type MockState struct {
 	ID           string    `json:"id" yaml:"id"`
 	TimesCount   int       `json:"times_count" yaml:"times_count"`
+	Locked       bool      `json:"locked" yaml:"locked"`
 	CreationDate time.Time `json:"creation_date" yaml:"creation_date"`
 }
