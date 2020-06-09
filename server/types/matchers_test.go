@@ -70,15 +70,9 @@ func TestStringMatcher_YAML(t *testing.T) {
 		t.Fatalf("value %s should be equal to %s", res.Value, "test")
 	}
 
-	b, err := yaml.Marshal(&res)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log(string(b))
-
 	test = `{"matcher":"test","value":"test2"}`
 	res = StringMatcher{}
-	if err = yaml.Unmarshal([]byte(test), &res); err != nil {
+	if err := yaml.Unmarshal([]byte(test), &res); err != nil {
 		t.Fatal(err)
 	}
 
@@ -88,13 +82,6 @@ func TestStringMatcher_YAML(t *testing.T) {
 	if res.Value != "test2" {
 		t.Fatalf("value %s should be equal to %s", res.Value, "test2")
 	}
-
-	b, err = yaml.Marshal(&res)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Log(string(b))
 }
 
 func TestMultiMapMatcher_JSON(t *testing.T) {
