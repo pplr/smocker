@@ -3,14 +3,11 @@ package services
 import (
 	"testing"
 
-	"github.com/Thiht/smocker/server/config"
 	"github.com/Thiht/smocker/server/types"
 )
 
 func Test_Mockserver_AddHistoryEntry_HistoryMaxRetention(t *testing.T) {
-	mockserver := NewMocks(config.Config{
-		HistoryMaxRetention: 1,
-	})
+	mockserver := NewMocks(1, NewPersistence(""))
 
 	sessionID := mockserver.NewSession("").ID
 	_, _ = mockserver.AddHistoryEntry(sessionID, &types.Entry{

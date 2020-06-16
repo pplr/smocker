@@ -12,8 +12,13 @@ import (
 
 func NewMockServer(cfg config.Config) services.Mocks {
 	server := echo.New()
-	mockServer := services.NewMocks(cfg)
 
+	persistance := services.NewPersistence(cfg.PersistenceDirectory)
+	sessions, err := persistance.LoadSessions()
+	if err != nil {
+		log.Error("unable to load sessions: ", err)
+	}
+	mockServer := services.NewMocksWithSessions(sessions, cfg.HistoryMaxRetention, persistance)
 	server.HideBanner = true
 	server.HidePort = true
 	server.Use(recoverMiddleware(), loggerMiddleware(), HistoryMiddleware(mockServer))

@@ -2,25 +2,13 @@ package services
 
 import (
 	"fmt"
-	"io/ioutil"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Thiht/smocker/server/config"
 	"github.com/Thiht/smocker/server/types"
 	"github.com/google/uuid"
-	log "github.com/sirupsen/logrus"
-	"golang.org/x/sync/errgroup"
-	"gopkg.in/yaml.v3"
-)
-
-var (
-	SessionNotFound = fmt.Errorf("session not found")
-	MockNotFound    = fmt.Errorf("mock not found")
 )
 
 type Mocks interface {
@@ -34,33 +22,34 @@ type Mocks interface {
 	UpdateSession(id, name string) (*types.Session, error)
 	GetLastSession() *types.Session
 	GetSessionByID(id string) (*types.Session, error)
-	GetSessionByName(name string) (*types.Session, error)
 	GetSessions() types.Sessions
 	SetSessions(sessions types.Sessions)
-	StoreSessions()
-	LoadSessions() error
 	Reset()
 }
 
 type mocks struct {
-	sessions             types.Sessions
-	mu                   sync.Mutex
-	historyRetention     int
-	persistenceDirectory string
+	sessions         types.Sessions
+	mu               sync.Mutex
+	historyRetention int
+	persistence      Persistence
 }
 
-func NewMocks(cfg config.Config) Mocks {
+func NewMocks(historyRetention int, persistence Persistence) Mocks {
+	return NewMocksWithSessions(types.Sessions{}, historyRetention, persistence)
+}
+func NewMocksWithSessions(sessions types.Sessions, historyRetention int, persistence Persistence) Mocks {
 	s := &mocks{
-		sessions:             types.Sessions{},
-		historyRetention:     cfg.HistoryMaxRetention,
-		persistenceDirectory: cfg.PersistenceDirectory,
+		sessions:         types.Sessions{},
+		historyRetention: historyRetention,
+		persistence:      persistence,
+	}
+	if sessions != nil {
+		s.sessions = sessions
 	}
 	return s
 }
 
 func (s *mocks) AddMock(sessionID string, newMock *types.Mock) (*types.Mock, error) {
-	defer s.StoreSessions()
-
 	session, err := s.GetSessionByID(sessionID)
 	if err != nil {
 		return nil, err
@@ -69,6 +58,7 @@ func (s *mocks) AddMock(sessionID string, newMock *types.Mock) (*types.Mock, err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	session.Mocks = append(types.Mocks{newMock}, session.Mocks...)
+	go s.persistence.StoreMocks(session.ID, session.Mocks.Clone())
 	return newMock, nil
 }
 
@@ -79,11 +69,8 @@ func (s *mocks) GetMocks(sessionID string) (types.Mocks, error) {
 	}
 
 	s.mu.Lock()
-	mocks := make(types.Mocks, len(session.Mocks))
-	copy(mocks, session.Mocks)
-	s.mu.Unlock()
-
-	return mocks, nil
+	defer s.mu.Unlock()
+	return session.Mocks.Clone(), nil
 }
 
 func (s *mocks) GetMockByID(sessionID, id string) (*types.Mock, error) {
@@ -100,12 +87,10 @@ func (s *mocks) GetMockByID(sessionID, id string) (*types.Mock, error) {
 			return mock, nil
 		}
 	}
-	return nil, MockNotFound
+	return nil, types.MockNotFound
 }
 
 func (s *mocks) AddHistoryEntry(sessionID string, entry *types.Entry) (*types.Entry, error) {
-	defer s.StoreSessions()
-
 	session, err := s.GetSessionByID(sessionID)
 	if err != nil {
 		return nil, err
@@ -119,6 +104,7 @@ func (s *mocks) AddHistoryEntry(sessionID string, entry *types.Entry) (*types.En
 	}
 
 	session.History = append(session.History, entry)
+	go s.persistence.StoreHistory(session.ID, session.History.Clone())
 	return entry, nil
 }
 
@@ -130,8 +116,7 @@ func (s *mocks) GetHistory(sessionID string) (types.History, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	return session.History, nil
+	return session.History.Clone(), nil
 }
 
 func (s *mocks) GetHistoryByPath(sessionID, filterPath string) (types.History, error) {
@@ -158,8 +143,6 @@ func (s *mocks) GetHistoryByPath(sessionID, filterPath string) (types.History, e
 }
 
 func (s *mocks) NewSession(name string) *types.Session {
-	defer s.StoreSessions()
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -182,12 +165,12 @@ func (s *mocks) NewSession(name string) *types.Session {
 		Mocks:   types.Mocks{},
 	}
 	s.sessions = append(s.sessions, session)
+
+	go s.persistence.StoreSession(s.sessions.Summarize(), session)
 	return session
 }
 
 func (s *mocks) UpdateSession(sessionID, name string) (*types.Session, error) {
-	defer s.StoreSessions()
-
 	session, err := s.GetSessionByID(sessionID)
 	if err != nil {
 		return nil, err
@@ -197,6 +180,7 @@ func (s *mocks) UpdateSession(sessionID, name string) (*types.Session, error) {
 	defer s.mu.Unlock()
 
 	session.Name = name
+	go s.persistence.StoreSession(s.sessions.Summarize(), session)
 	return session, nil
 }
 
@@ -208,12 +192,12 @@ func (s *mocks) GetLastSession() *types.Session {
 		s.mu.Lock()
 	}
 	defer s.mu.Unlock()
-	return s.sessions[len(s.sessions)-1]
+	return s.sessions[len(s.sessions)-1].Clone()
 }
 
 func (s *mocks) GetSessionByID(id string) (*types.Session, error) {
 	if id == "" {
-		return nil, SessionNotFound
+		return nil, types.SessionNotFound
 	}
 
 	s.mu.Lock()
@@ -224,7 +208,7 @@ func (s *mocks) GetSessionByID(id string) (*types.Session, error) {
 			return session, nil
 		}
 	}
-	return nil, SessionNotFound
+	return nil, types.SessionNotFound
 }
 
 func (s *mocks) GetSessionByName(name string) (*types.Session, error) {
@@ -232,7 +216,7 @@ func (s *mocks) GetSessionByName(name string) (*types.Session, error) {
 	defer s.mu.Unlock()
 
 	if name == "" {
-		return nil, SessionNotFound
+		return nil, types.SessionNotFound
 	}
 
 	for _, session := range s.sessions {
@@ -240,166 +224,25 @@ func (s *mocks) GetSessionByName(name string) (*types.Session, error) {
 			return session, nil
 		}
 	}
-	return nil, SessionNotFound
+	return nil, types.SessionNotFound
 }
 
 func (s *mocks) GetSessions() types.Sessions {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sessions
+	return s.sessions.Clone()
 }
 
 func (s *mocks) SetSessions(sessions types.Sessions) {
-	defer s.StoreSessions()
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions = sessions
-}
-
-func (s *mocks) StoreSessions() {
-	if s.persistenceDirectory == "" {
-		return
-	}
-	go func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if err := ClearDir(s.persistenceDirectory); err != nil {
-			log.Error("unable to clean directory: ", err)
-			return
-		}
-		var sessionsGroup errgroup.Group
-		sessionsSummary := make([]types.SessionSummary, 0, len(s.sessions))
-		for _, session := range s.sessions {
-			sessionsSummary = append(sessionsSummary, types.SessionSummary(*session))
-			sessionsGroup.Go(func() error {
-				if err := os.MkdirAll(filepath.Join(s.persistenceDirectory, session.ID), os.ModePerm); err != nil {
-					return err
-				}
-				var g errgroup.Group
-				g.Go(func() error {
-					history, err := yaml.Marshal(session.History)
-					if err != nil {
-						return err
-					}
-					err = ioutil.WriteFile(filepath.Join(s.persistenceDirectory, session.ID, "history.yml"), history, os.ModePerm)
-					if err != nil {
-						return err
-					}
-					return nil
-				})
-				g.Go(func() error {
-					mocks, err := yaml.Marshal(session.Mocks)
-					if err != nil {
-						return err
-					}
-					err = ioutil.WriteFile(filepath.Join(s.persistenceDirectory, session.ID, "mocks.yml"), mocks, os.ModePerm)
-					if err != nil {
-						return err
-					}
-					return nil
-				})
-				if err := g.Wait(); err != nil {
-					return err
-				}
-				return nil
-			})
-		}
-		sessionsGroup.Go(func() error {
-			sessions, err := yaml.Marshal(sessionsSummary)
-			if err != nil {
-				return err
-			}
-			err = ioutil.WriteFile(filepath.Join(s.persistenceDirectory, "sessions.yml"), sessions, os.ModePerm)
-			if err != nil {
-				return err
-			}
-			return nil
-		})
-		if err := sessionsGroup.Wait(); err != nil {
-			log.Error("unable to store sessions: ", err)
-		}
-	}()
-}
-
-func (s *mocks) LoadSessions() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.persistenceDirectory == "" {
-		return nil
-	}
-	if _, err := os.Stat(s.persistenceDirectory); os.IsNotExist(err) {
-		return err
-	}
-	file, err := os.Open(filepath.Join(s.persistenceDirectory, "sessions.yml"))
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	bytes, err := ioutil.ReadAll(file)
-	if err != nil {
-		return err
-	}
-	var sessions types.Sessions
-	err = yaml.Unmarshal(bytes, &sessions)
-	if err != nil {
-		return err
-	}
-	var sessionsGroup errgroup.Group
-	var mu sync.Mutex
-	for _, session := range sessions {
-		sessionsGroup.Go(func() error {
-			historyFile, err := os.Open(filepath.Join(s.persistenceDirectory, session.ID, "history.yml"))
-			if err != nil {
-				return err
-			}
-			defer historyFile.Close()
-			bytes, err := ioutil.ReadAll(historyFile)
-			if err != nil {
-				return err
-			}
-			var history types.History
-			err = yaml.Unmarshal(bytes, &history)
-			if err != nil {
-				return err
-			}
-			mu.Lock()
-			session.History = history
-			mu.Unlock()
-			return nil
-		})
-		sessionsGroup.Go(func() error {
-			mocksFile, err := os.Open(filepath.Join(s.persistenceDirectory, session.ID, "mocks.yml"))
-			if err != nil {
-				return err
-			}
-			defer mocksFile.Close()
-			bytes, err := ioutil.ReadAll(mocksFile)
-			if err != nil {
-				return err
-			}
-			var mocks types.Mocks
-			err = yaml.Unmarshal(bytes, &mocks)
-			if err != nil {
-				return err
-			}
-			mu.Lock()
-			session.Mocks = mocks
-			mu.Unlock()
-			return nil
-		})
-	}
-	if err := sessionsGroup.Wait(); err != nil {
-		return err
-	}
-	s.sessions = sessions
-	return nil
+	go s.persistence.StoreSessions(s.sessions.Clone())
 }
 
 func (s *mocks) Reset() {
-	defer s.StoreSessions()
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions = types.Sessions{}
+	go s.persistence.StoreSessions(s.sessions.Clone())
 }
